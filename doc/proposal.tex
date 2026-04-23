@@ -1,0 +1,135 @@
+\documentclass{article}
+
+% 修改为 final 选项：去掉 preprint 页脚，并显示作者姓名
+\usepackage[final]{neurips_2026}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+
+\title{Project Proposal: Building and Extending GPT-2}
+
+\author{%
+  Han Huang \\
+  \texttt{hanhuang@kth.se} \\
+  \And
+  Jingze Guo\\
+  \texttt{jingze@kth.se} \\
+  \AND
+  Kai Zhao\\
+  \texttt{kaizha@kth.se} \\
+  \And
+  Boyan Zhang \\
+  \texttt{boyanz@kth.se} \\
+}
+
+\begin{document}
+
+\maketitle
+
+\section{Project Type}
+% 3) Whether you will complete a custom, default or default + extension project.
+Default Project 3b (with A/B extensions).
+
+\section{Problem Description and Proposed Approach}
+% 4) A brief description of the problem that you will work on and how you will try to solve it. Reference to at least one paper.
+
+\paragraph{Problem Description} 
+While large language models (LLMs) based on the Transformer architecture demonstrate exceptional zero-shot and few-shot capabilities, adapting these massive pre-trained models to specific downstream tasks remains computationally expensive and memory-intensive. The primary objective of this project is to gain a rigorous, low-level understanding of the Transformer architecture by building the core components of GPT-2 and exploring how to effectively fine-tune it under constrained computational resources.
+
+\paragraph{Proposed Approach} 
+We will solve this by implementing a bare-bones version of OpenAI’s GPT-2 architecture and the Adam optimizer from scratch. To bypass the prohibitively expensive pre-training phase, we will initialize our custom architecture using pre-trained weights from Hugging Face.
+
+Our baseline approach involves extracting representations from the frozen model to train a linear classifier, which we will then compare against full model fine-tuning. We will evaluate the model's performance on sentiment classification using the Stanford Sentiment Treebank (SST) and CFIMDB datasets, and adapt it for text generation.
+
+Furthermore, to address the high memory footprint of full fine-tuning and as our primary extension for a higher grade, we will investigate parameter-efficient fine-tuning (PEFT). Specifically, we propose implementing Low-Rank Adaptation (LoRA) to update only a small fraction of the model's weights, comparing its final performance and computational efficiency against the standard full fine-tuning approach.
+
+\paragraph{Inspirational Literature} 
+This project’s foundation is inspired by the original GPT-2 paper, ``Language Models are Unsupervised Multitask Learners'' \cite{radford2019gpt2}. Our proposed extension methodology is directly guided by the LoRA paper \cite{hu2021lora}.
+
+
+\section{Data}
+% 5) The data that you will use for training, validation and testing.
+Stanford Sentiment Treebank (SST) and CFIMDB for sentiment analysis; Shakespeare's Sonnets for text generation.
+
+\section{Software Packages}
+% 6) The deep learning software package(s) you will use.
+PyTorch
+
+\section{Implementation Details}
+% 7) How much of the software implementation your group will write and to what extent will rely on open-source implementations.
+[Specify what you will code from scratch. e.g., We will write the missing core Transformer blocks and Adam optimizer, while relying on Hugging Face for the pre-trained weights.]
+
+\section{Baselines}
+% 8) The baselines you intend to use.
+[Specify baselines. e.g., Linear classifier trained on extracted representations; un-finetuned GPT-2 performance.]
+
+\section{Evaluation Metrics}
+% 9) How will you evaluate your results?
+[Specify metrics. e.g., Accuracy for classification tasks; Perplexity and BLEU scores for text generation.]
+
+\section{Target Grade}
+% 10) The grade your project group is aiming for in the range A-E.
+A
+
+\section{Milestones}
+% 11) Which achieved milestones during your project should be reached as you work towards your grade target.
+
+\subsection{E/C Grade Milestones}
+% 去掉了 \item 后面的中括号
+\begin{itemize}
+    \item Add milestone 1, e.g., Write and debug the 5 missing code blocks.
+    \item Add milestone 2, e.g., Fine-tune the pre-trained model for sentiment analysis on SST and CFIMDB.
+    \item Add milestone 3, e.g., Fine-tune for text generation.
+\end{itemize}
+
+\subsection{C/D Grade Milestones}
+% 去掉了 \item 后面的中括号
+\begin{itemize}
+    \item Add milestone 1, e.g., Perform thorough hyper-parameter search.
+    \item Add milestone 2, e.g., Compare full fine-tuning versus training a linear classifier on extracted representations.
+\end{itemize}
+
+\subsection{A/B Grade Milestones}
+% 去掉了 \item 后面的中括号
+\begin{itemize}
+    \item Add milestone 1, e.g., Implement an extension such as parameter-efficient fine-tuning (LoRA), accelerating attention, or model quantization.
+    \item Add milestone 2, e.g., Conduct ablation studies on the chosen extension.
+\end{itemize}
+
+\section{Skills to Acquire}
+% 12) Specify for each group member the skills/knowledge w.r.t. deep learning "theory" and practice they aim to acquire.
+\begin{itemize}
+    \item \textbf{Han Huang:} [Skill to acquire]
+    \item \textbf{Jingze Guo:} [Skill to acquire]
+    \item \textbf{Kai Zhao:} [Skill to acquire]
+    \item \textbf{Boyan Zhang:} [Skill to acquire]
+\end{itemize}
+
+\section{Workload Breakdown (3hp per person)}
+% 13) As the project corresponds to 3hp per person, please specify how the proposed project will require this amount of work per person.
+
+
+% --- References Section ---
+\bibliographystyle{plain}
+\begin{thebibliography}{10}
+
+\bibitem{radford2019gpt2}
+Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., \& Sutskever, I.
+\newblock Language models are unsupervised multitask learners.
+\newblock \emph{OpenAI blog}, 1(8):9, 2019.
+
+\bibitem{hu2021lora}
+Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., \& Chen, W.
+\newblock LoRA: Low-rank adaptation of large language models.
+\newblock \emph{arXiv preprint arXiv:2106.09685}, 2021.
+
+\end{thebibliography}
+
+\end{document}
