@@ -23,25 +23,55 @@ class GPT2Layer(nn.Module):
 
   def add(self, input, output, dense_layer, dropout):
     """
-    TODO: Implement this helper method for the forward function.
+    Implement this helper method for the forward function.
       - This function is applied after the multi-head attention layer as well as after the feed forward layer.
       - GPT-2 layer applies dropout to the transformed output of each sub-layer,
         before it is added to the sub-layer input. WE DO NOT APPLY THE LAYER NORM
         IN THIS FUNCTION.
     """
-    ### YOUR CODE HERE
-    raise NotImplementedError
+    output = dropout(dense_layer(output))
+    return input + output
 
 
   def forward(self, hidden_states, attention_mask):
+
     """
-    TODO: Implement the forward pass. Some key points to consider:
+    Implement the forward pass. Some key points to consider:
            - A multi-head attention layer (CausalSelfAttention) that computes self-attention based on masked inputs.
            - Layer normalization applied *before* the attention layer and feed-forward layer.
            - Apply dropout, residual connection, and layer normalization according to the plot in the assignment. (Use self.add)
            - A feed-forward layer that applies transformations to further refine the hidden states.
     """
+    
+    # Pre-LN for attention
+    attention_input = self.attention_layer_norm(hidden_states)
 
-    ### YOUR CODE HERE
-    raise NotImplementedError
+    # Self-attention
+    attention_output = self.self_attention(attention_input, attention_mask)
+    
+    # Dense + dropout + residual add 
+    hidden_states = self.add(
+        hidden_states, 
+        attention_output, 
+        self.attention_dense, 
+        self.attention_dropout
+    )
+
+    # Pre-LN for feed-forward
+    ff_input = self.out_layer_norm(hidden_states)
+
+    # Feed-forward network
+    ff_output = self.interm_af(self.interm_dense(ff_input))
+
+    # Dense + dropout + residual add
+    hidden_states = self.add(
+        hidden_states,
+        ff_output,
+        self.out_dense,
+        self.out_dropout
+    )
+
+    return hidden_states
+
+    
 
