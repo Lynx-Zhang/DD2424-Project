@@ -54,7 +54,7 @@ class GPT2Model(GPTPreTrainedModel):
 
     embeds = inputs_embeds + pos_embeds
 
-    # droptout
+    # dropout
     return self.embed_dropout(embeds)
 
   def encode(self, hidden_states, attention_mask):

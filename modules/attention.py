@@ -33,8 +33,32 @@ class CausalSelfAttention(nn.Module):
 
   def attention(self, key, query, value, attention_mask):
 
-    ### YOUR CODE HERE
-    raise NotImplementedError
+    # calculate attention scores
+    a = query @ key.transpose(-1, -2) / (self.attention_head_size ** 0.5) # B, H, S, S
+
+    # causal mask
+    seq_len = query.size(-2)
+    causal_mask = torch.triu(
+      torch.ones(seq_len, seq_len, device=query.device, dtype=torch.bool),
+      diagonal=1
+    )
+
+    a = a.masked_fill(
+      causal_mask,
+      torch.finfo(a.dtype).min
+    )
+
+    a = a + attention_mask
+
+    # softmax + dropout
+    p = self.dropout(torch.softmax(a, dim=-1))
+    
+    context =  p @ value # B H S D
+    context = rearrange(context, 'b h t d -> b t (h d)') 
+
+    return context
+   
+
 
 
   def forward(self, hidden_states, attention_mask):
