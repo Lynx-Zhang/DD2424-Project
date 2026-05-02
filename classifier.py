@@ -58,17 +58,17 @@ class GPT2SentimentClassifier(torch.nn.Module):
     self.classifier = torch.nn.Linear(config.hidden_size, self.num_labels) 
 
 
-def forward(self, input_ids, attention_mask):
-    '''Takes a batch of sentences and returns logits for sentiment classes'''
+  def forward(self, input_ids, attention_mask):
+      '''Takes a batch of sentences and returns logits for sentiment classes'''
 
-    output = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
+      output = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
 
-    last_token = output['last_token']
+      last_token = output['last_token']
 
-    # dropout + linear classifier
-    logits = self.classifier(self.dropout(last_token))
+      # dropout + linear classifier
+      logits = self.classifier(self.dropout(last_token))
 
-    return logits
+      return logits
 
 
 
