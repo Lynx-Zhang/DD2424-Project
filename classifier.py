@@ -67,9 +67,16 @@ class GPT2SentimentClassifier(torch.nn.Module):
     ###       the training loop currently uses F.cross_entropy as the loss function.
     ### YOUR CODE HERE
     output = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
-    last_hidden= output['last_hidden_state']   # [B, L, 768]
-
-    logits = self.classifier(last_hidden)   # [B, 5]
+    hidden_states = output['last_hidden_state']        # [B, L, 768]
+    
+    last_token_idx = attention_mask.sum(dim=1) - 1     # [B]
+    
+    batch_size = input_ids.shape[0]
+    indices = torch.arange(batch_size, device=hidden_states.device)
+    last_hidden = hidden_states[indices, last_token_idx]   # [B, 768]
+    
+    logits = self.classifier(last_hidden)              # [B, 5]
+    
     return logits
     # raise NotImplementedError
 
