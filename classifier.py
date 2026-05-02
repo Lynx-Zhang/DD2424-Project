@@ -53,32 +53,22 @@ class GPT2SentimentClassifier(torch.nn.Module):
       elif config.fine_tune_mode == 'full-model':
         param.requires_grad = True
 
-    ### TODO: Create any instance variables you need to classify the sentiment of BERT embeddings.
+    ### Create any instance variables you need to classify the sentiment of BERT embeddings.
     ### YOUR CODE HERE
-    self.classifier = torch.nn.Linear(config.hidden_size, self.num_labels)  
-    # raise NotImplementedError
+    self.classifier = torch.nn.Linear(config.hidden_size, self.num_labels) 
 
 
-  def forward(self, input_ids, attention_mask):
+def forward(self, input_ids, attention_mask):
     '''Takes a batch of sentences and returns logits for sentiment classes'''
 
-    ### TODO: The final GPT contextualized embedding is the hidden state of the last token.
-    ###       HINT: You should consider what is an appropriate return value given that
-    ###       the training loop currently uses F.cross_entropy as the loss function.
-    ### YOUR CODE HERE
     output = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
-    hidden_states = output['last_hidden_state']        # [B, L, 768]
-    
-    last_token_idx = attention_mask.sum(dim=1) - 1     # [B]
-    
-    batch_size = input_ids.shape[0]
-    indices = torch.arange(batch_size, device=hidden_states.device)
-    last_hidden = hidden_states[indices, last_token_idx]   # [B, 768]
-    
-    logits = self.classifier(last_hidden)              # [B, 5]
-    
+
+    last_token = output['last_token']
+
+    # dropout + linear classifier
+    logits = self.classifier(self.dropout(last_token))
+
     return logits
-    # raise NotImplementedError
 
 
 
