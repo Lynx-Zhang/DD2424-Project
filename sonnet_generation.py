@@ -60,8 +60,11 @@ class SonnetGPT(nn.Module):
     not just the last token! This will allow our model to learn the natural language distribution that composes sonnets,
     not just the distribution over next tokens for the last token!
     """
-    ### YOUR CODE HERE
-    raise NotImplementedError
+    output = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
+    hidden_states = output['last_hidden_state']
+    logits = self.gpt.hidden_state_to_token(hidden_states)
+
+    return logits
 
 
   def get_device(self):
@@ -77,22 +80,22 @@ class SonnetGPT(nn.Module):
     In particular, generating multiple sequences and choosing the best with beam search is one avenue. Top_k is another;
     there are many.
     """
-    token_ids = encoding.to(self.get_device())
+    token_ids = encoding.to(self.get_device()) # 1, S
     attention_mask = torch.ones(token_ids.shape, dtype=torch.int64).to(self.get_device())
 
 
     for _ in range(max_length):
       # Forward pass to get logits
-      logits_sequence = self.forward(token_ids, attention_mask)
-      logits_last_token = logits_sequence[:, -1, :] / temperature  # Apply temperature scaling
+      logits_sequence = self.forward(token_ids, attention_mask) # 1, S, vocab
+      logits_last_token = logits_sequence[:, -1, :] / temperature  # Apply temperature scaling # [1, vocab]
 
       # Convert logits to probabilities
-      probs = torch.nn.functional.softmax(logits_last_token, dim=-1)
+      probs = torch.nn.functional.softmax(logits_last_token, dim=-1) # [1, vocab]
 
       # Top-p (nucleus) sampling
       sorted_probs, sorted_indices = torch.sort(probs, descending=True)
       cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-      top_p_mask = cumulative_probs <= top_p
+      top_p_mask = cumulative_probs <= top_p # 例如 [[True, True, True, True, False, False]]
       top_p_mask[..., 1:] = top_p_mask[..., :-1].clone()  # Shift mask right for proper thresholding
       top_p_mask[..., 0] = True  # Always include the highest probability token
       filtered_probs = sorted_probs * top_p_mask  # Zero out unlikely tokens
@@ -112,7 +115,10 @@ class SonnetGPT(nn.Module):
         [attention_mask, torch.ones((1, 1), dtype=torch.int64).to(self.get_device())], dim=1
       )
 
-    generated_output = self.tokenizer.decode(token_ids[0].cpu().numpy().tolist())[3:]
+    generated_output = self.tokenizer.decode(
+        token_ids[0].cpu().tolist(),
+        skip_special_tokens=True
+    )
     return token_ids, generated_output
 
 
@@ -179,7 +185,7 @@ def train(args):
     for batch in held_out_sonnet_dataset:
       encoding = model.tokenizer(batch[1], return_tensors='pt', padding=True, truncation=True).to(device)
       output = model.generate(encoding['input_ids'], temperature=args.temperature, top_p=args.top_p)
-      print(f'{batch[1]}{output[1]}\n\n')
+      print(f'{output[1]}\n\n')
 
     # TODO: consider a stopping condition to prevent overfitting on the small dataset of sonnets.
     save_model(model, optimizer, args, f'{epoch}_{args.filepath}')
@@ -199,7 +205,7 @@ def generate_submission_sonnets(args):
   held_out_sonnet_dataset = SonnetsDataset(args.held_out_sonnet_path)
 
   generated_sonnets = []
-  for batch in held_out_sonnet_dataset:
+  for batch in held_out_sonnet_dataset: # 每一首诗
     sonnet_id = batch[0]
     encoding = model.tokenizer(batch[1], return_tensors='pt', padding=False, truncation=True).to(device)
     output = model.generate(encoding['input_ids'], temperature=args.temperature, top_p=args.top_p)[0][0]
@@ -207,7 +213,7 @@ def generate_submission_sonnets(args):
     full_sonnet = f'{decoded_output}\n\n'
     generated_sonnets.append((sonnet_id, full_sonnet))
 
-    print(f'{decoded_output}\n\n')
+    print(f'{decoded_output}\n\n') # 完整的一首诗，包括原来的三行
 
   with open(args.sonnet_out, "w+") as f:
     f.write(f"--Generated Sonnets-- \n\n")
