@@ -26,6 +26,7 @@ from datasets import (
 from models.gpt2 import GPT2Model
 
 from optimizer import AdamW
+from sacrebleu.metrics import CHRF
 
 TQDM_DISABLE = False
 
@@ -136,6 +137,36 @@ def save_model(model, optimizer, args, filepath):
   print(f"save the model to {filepath}")
 
 
+def eval_loss(model, dataloader, device):
+  model.eval()
+  total_loss, num_batches = 0, 0
+  with torch.no_grad():
+    for batch in dataloader:
+      b_ids, b_mask = batch['token_ids'].to(device), batch['attention_mask'].to(device)
+      logits = model(b_ids, b_mask)
+      logits = rearrange(logits[:, :-1].contiguous(), 'b t d -> (b t) d')
+      labels = b_ids[:, 1:].clone()
+      labels[~b_mask[:, 1:].bool()] = -100
+      total_loss += F.cross_entropy(logits, labels.flatten(), ignore_index=-100).item()
+      num_batches += 1
+  return total_loss / num_batches
+
+
+@torch.no_grad()
+def eval_chrf(model, prompt_dataset, reference_dataset, device, temperature=0.7, top_p=0.9):
+  model.eval()
+  generated_texts, reference_texts = [], []
+  for idx in range(len(prompt_dataset)):
+    prompt_text = prompt_dataset[idx][1]
+    encoding = model.tokenizer(
+      prompt_text, return_tensors='pt', padding=False, truncation=True
+    ).to(device)
+    _, generated_text = model.generate(encoding['input_ids'], temperature=temperature, top_p=top_p)
+    generated_texts.append(generated_text)
+    reference_texts.append(reference_dataset[idx][1])
+  return float(CHRF().corpus_score(generated_texts, [reference_texts]).score)
+
+
 def train(args):
   """Train GPT-2 for sonnet generation on the Quora dataset."""
   device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
@@ -144,6 +175,15 @@ def train(args):
   sonnet_dataloader = DataLoader(sonnet_dataset, shuffle=True, batch_size=args.batch_size,
                                  collate_fn=sonnet_dataset.collate_fn)
 
+  # Validation set: complete sonnets for CE loss monitoring.
+  val_dataset = SonnetsDataset(args.val_sonnet_path)
+  val_dataloader = DataLoader(val_dataset, shuffle=False, batch_size=args.batch_size,
+                              collate_fn=val_dataset.collate_fn)
+
+  # Val datasets for chrF early stopping: 3-line prompts + complete references.
+  val_held_out_sonnet_dataset = SonnetsDataset(args.val_held_out_sonnet_path)
+  val_true_sonnet_dataset = SonnetsDataset(args.val_sonnet_path)
+
   # Create the held-out dataset: these only have the first 3 lines. Your job is to fill in the rest!
   held_out_sonnet_dataset = SonnetsDataset(args.held_out_sonnet_path)
 
@@ -151,8 +191,11 @@ def train(args):
   model = SonnetGPT(args)
   model = model.to(device)
 
-  lr = args.lr
-  optimizer = AdamW(model.parameters(), lr=lr)
+  optimizer = AdamW(model.parameters(), lr=args.lr)
+
+  best_val_chrf = -1.0
+  epochs_without_improvement = 0
+  best_model_path = f'best_{args.filepath}'
 
   # Run for the specified number of epochs.
   for epoch in range(args.epochs):
@@ -161,18 +204,13 @@ def train(args):
     num_batches = 0
 
     for batch in tqdm(sonnet_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
-      # Get the input and move it to the gpu (I do not recommend training this model on CPU).
-      b_ids, b_mask = batch['token_ids'], batch['attention_mask']
-      b_ids = b_ids.to(device)
-      b_mask = b_mask.to(device)
+      b_ids, b_mask = batch['token_ids'].to(device), batch['attention_mask'].to(device)
 
-      # Compute the loss, gradients, and update the model's parameters.
       optimizer.zero_grad()
-      logits = model(b_ids, b_mask) # B, S, vocab
-      logits = rearrange(logits[:, :-1].contiguous(), 'b t d -> (b t) d')  # Ignore the last prediction in the sequence.
+      logits = model(b_ids, b_mask)
+      logits = rearrange(logits[:, :-1].contiguous(), 'b t d -> (b t) d')
       labels = b_ids[:, 1:].clone()
-      mask = b_mask[:, 1:].bool()
-      labels[~mask] = -100
+      labels[~b_mask[:, 1:].bool()] = -100
       loss = F.cross_entropy(logits, labels.flatten(), ignore_index=-100)
       loss.backward()
       optimizer.step()
@@ -180,8 +218,23 @@ def train(args):
       train_loss += loss.item()
       num_batches += 1
 
-    train_loss = train_loss / num_batches
-    print(f"Epoch {epoch}: train loss :: {train_loss :.3f}.")
+    train_loss /= num_batches
+    val_loss = eval_loss(model, val_dataloader, device)
+    val_chrf = eval_chrf(model, val_held_out_sonnet_dataset, val_true_sonnet_dataset, device,
+                         temperature=args.temperature, top_p=args.top_p)
+    print(f"Epoch {epoch}: train loss :: {train_loss:.3f}, val loss :: {val_loss:.3f}, val chrF :: {val_chrf:.2f}.")
+
+    if val_chrf > best_val_chrf:
+      best_val_chrf = val_chrf
+      epochs_without_improvement = 0
+      save_model(model, optimizer, args, best_model_path)
+    else:
+      epochs_without_improvement += 1
+      print(f"No improvement for {epochs_without_improvement}/{args.patience} epoch(s). Best val chrF: {best_val_chrf:.2f}.")
+      if epochs_without_improvement >= args.patience:
+        print(f"Early stopping triggered after epoch {epoch}.")
+        break
+
     print('Generating several output sonnets...')
     model.eval()
     for batch in held_out_sonnet_dataset:
@@ -189,14 +242,11 @@ def train(args):
       output = model.generate(encoding['input_ids'], temperature=args.temperature, top_p=args.top_p)
       print(f'{output[1]}\n\n')
 
-    # TODO: consider a stopping condition to prevent overfitting on the small dataset of sonnets.
-    save_model(model, optimizer, args, f'{epoch}_{args.filepath}')
-
 
 @torch.no_grad()
 def generate_submission_sonnets(args):
   device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-  saved = torch.load(f'{args.epochs-1}_{args.filepath}', weights_only=False)
+  saved = torch.load(f'best_{args.filepath}', weights_only=False)
 
   model = SonnetGPT(saved['args'])
   model.load_state_dict(saved['model'])
@@ -242,6 +292,9 @@ def get_args():
 
   parser.add_argument("--batch_size", help='The training batch size.', type=int, default=8)
   parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+  parser.add_argument("--patience", type=int, help="Early stopping patience (epochs without val chrF improvement).", default=3)
+  parser.add_argument("--val_sonnet_path", type=str, default="data/TRUE_sonnets_held_out_dev.txt")
+  parser.add_argument("--val_held_out_sonnet_path", type=str, default="data/sonnets_held_out_dev.txt")
   parser.add_argument("--model_size", type=str, help="The model size as specified on hugging face.",
                       choices=['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'], default='gpt2')
 
