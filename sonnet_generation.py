@@ -87,20 +87,12 @@ class SonnetGPT(nn.Module):
             self.get_device()
         )
 
-        newline_token_id = self.tokenizer.encode("\n")[0]
-        min_new_lines = 11
         for _ in range(max_length):
             # Forward pass to get logits
             logits_sequence = self.forward(token_ids, attention_mask)  # 1, S, vocab
             logits_last_token = (
                 logits_sequence[:, -1, :] / temperature
             )  # Apply temperature scaling # [1, vocab]
-
-            current_newlines = (token_ids[0] == newline_token_id).sum().item()
-            if current_newlines < (
-                3 + min_new_lines
-            ):  # prompt 3 line + 11 generated lineds
-                logits_last_token[0, self.tokenizer.eos_token_id] = -float("inf")
 
             # Convert logits to probabilities
             probs = torch.nn.functional.softmax(logits_last_token, dim=-1)  # [1, vocab]
