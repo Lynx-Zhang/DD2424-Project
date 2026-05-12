@@ -220,7 +220,8 @@ def train(args):
     model = SonnetGPT(args)
     model = model.to(device)
 
-    optimizer = AdamW(model.parameters(), lr=args.lr)
+    # optimizer = AdamW(model.parameters(), lr=args.lr)
+    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     best_val_chrf = -1.0
     epochs_without_improvement = 0
@@ -355,6 +356,7 @@ def get_args():
         "--batch_size", help="The training batch size.", type=int, default=8
     )
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+    parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument(
         "--patience",
         type=int,
