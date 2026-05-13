@@ -54,8 +54,19 @@ class ReFTWrapper(nn.Module):
         elif self.positions == 'last':
             # Apply only to the last non-padding token
             if attention_mask is not None:
-                last_idx = attention_mask.sum(dim=1) - 1
-                batch_idx = torch.arange(h.size(0), device=h.device)
+                # Handle both extended_attention_mask (0 is valid, negative is padding)
+                # and original mask (1 is valid, 0 is padding)
+                if attention_mask.dim() == 4: # [batch, 1, 1, seq_len]
+                    # In extended mask, non-padding tokens are 0
+                    mask = (attention_mask == 0).long().view(h.size(0), -1)
+                else:
+                    mask = (attention_mask > 0).long()
+                
+                last_idx = (mask.sum(dim=1) - 1).long()
+                batch_idx = torch.arange(h.size(0), device=h.device).long()
+                
+                # Ensure indices are within bounds
+                last_idx = torch.clamp(last_idx, min=0)
                 
                 # We only want to modify the last token, so we create a copy or use scatter
                 h_new = h.clone()
