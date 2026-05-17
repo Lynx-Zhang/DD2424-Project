@@ -36,6 +36,7 @@ class CausalSelfAttention(nn.Module):
     # {'baseline', 'flash', 'swa'} to enable the acceleration experiments.
     self.attn_impl = getattr(config, 'attn_impl', 'baseline')
     self.swa_window_size = getattr(config, 'swa_window_size', 128)
+    self.swa_sink_size = getattr(config, 'swa_sink_size', 0) 
 
   def transform(self, x, linear_layer):
     # The corresponding linear_layer of k, v, q are used to project the hidden_state (x).
@@ -112,16 +113,20 @@ class CausalSelfAttention(nn.Module):
     w = self.swa_window_size
     seq_len = query.size(-2)
 
+    sink = self.swa_sink_size   # ← 新加
+
     if _HAS_FLEX_ATTENTION:
       has_padding = (attention_mask is not None) and bool((attention_mask < 0).any())
       if not has_padding:
-        cache_key = (seq_len, w, query.device)
+        cache_key = (seq_len, w, sink, query.device)   # ← 加 sink 进 cache key
         if getattr(self, '_swa_cache_key', None) != cache_key:
           window = w
+          sink_size = sink                              # ← 在闭包里捕获
           def swa_mask_mod(b, h, q_idx, kv_idx):
             causal = q_idx >= kv_idx
             in_window = (q_idx - kv_idx) <= window
-            return causal & in_window
+            is_sink = kv_idx < sink_size                # ← 新加
+            return causal & (in_window | is_sink)       # ← 改 OR
           self._swa_block_mask = create_block_mask(
             swa_mask_mod, B=None, H=None,
             Q_LEN=seq_len, KV_LEN=seq_len,
@@ -151,7 +156,9 @@ class CausalSelfAttention(nn.Module):
     i = torch.arange(seq_len, device=query.device)
     diff = i[:, None] - i[None, :]
     band_keep = (diff >= 0) & (diff <= w)
-    band_mask = ~band_keep  # True = mask out
+    sink_keep = i[None, :] < sink            # ← 新加：前 sink 列永远 keep
+    band_keep = band_keep | sink_keep         # ← OR sink
+    band_mask = ~band_keep
 
     has_padding = (attention_mask is not None) and bool((attention_mask < 0).any())
     if has_padding:
