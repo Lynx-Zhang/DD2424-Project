@@ -5,7 +5,10 @@ from einops import rearrange
 from torch import nn
 
 try:
-  from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+  from torch.nn.attention.flex_attention import flex_attention as _flex_attention_eager, create_block_mask
+  # Compile for true block-sparse O(N*w). Without compile FlexAttention
+  # materializes the full N*N score matrix (~no speedup vs baseline).
+  flex_attention = torch.compile(_flex_attention_eager, dynamic=False)
   _HAS_FLEX_ATTENTION = True
 except ImportError:
   _HAS_FLEX_ATTENTION = False
