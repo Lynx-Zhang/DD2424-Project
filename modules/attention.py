@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 from einops import rearrange
 from torch import nn
@@ -20,6 +21,12 @@ class CausalSelfAttention(nn.Module):
     # implementation of transformer. Although it is a bit unusual, we empirically
     # observe that it yields better performance.
     self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
+
+    # Attention implementation selector. Default = 'baseline' keeps the original
+    # behaviour for every existing caller. Switch via config.attn_impl in
+    # {'baseline', 'flash', 'swa'} to enable the acceleration experiments.
+    self.attn_impl = getattr(config, 'attn_impl', 'baseline')
+    self.swa_window_size = getattr(config, 'swa_window_size', 128)
 
   def transform(self, x, linear_layer):
     # The corresponding linear_layer of k, v, q are used to project the hidden_state (x).
@@ -52,14 +59,83 @@ class CausalSelfAttention(nn.Module):
 
     # softmax + dropout
     p = self.dropout(torch.softmax(a, dim=-1))
-    
+
     context =  p @ value # B H S D
-    context = rearrange(context, 'b h t d -> b t (h d)') 
+    context = rearrange(context, 'b h t d -> b t (h d)')
 
     return context
-   
 
+  def _flash_attention(self, query, key, value, attention_mask):
+    # FlashAttention via PyTorch SDPA. On L4 (sm_89) with bf16/fp16 inputs and
+    # is_causal=True without an attn_mask, this dispatches to the FA2 kernel.
+    # When a padding mask is present we combine it with the causal mask and
+    # accept the mem-efficient backend, which still beats the manual baseline.
+    dropout_p = self.dropout.p if self.training else 0.0
 
+    has_padding = (attention_mask is not None) and bool((attention_mask < 0).any())
+
+    if not has_padding:
+      context = F.scaled_dot_product_attention(
+        query, key, value,
+        dropout_p=dropout_p,
+        is_causal=True,
+      )
+    else:
+      seq_len = query.size(-2)
+      causal = torch.ones(seq_len, seq_len, device=query.device, dtype=torch.bool).triu(1)
+      pad = (attention_mask < 0)  # [B, 1, 1, N]
+      attn_mask = causal[None, None] | pad  # broadcasts to [B, 1, N, N]
+      context = F.scaled_dot_product_attention(
+        query, key, value,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=False,
+      )
+
+    return rearrange(context, 'b h t d -> b t (h d)')
+
+  def _swa_attention(self, query, key, value, attention_mask):
+    # Sliding Window Attention (Longformer-style). The flash-attn library
+    # provides a native window_size argument that gives the true O(N*w) compute
+    # path; if it is not installed we fall back to a banded mask via SDPA,
+    # which preserves the utility tradeoff but not the compute speedup.
+    dropout_p = self.dropout.p if self.training else 0.0
+    w = self.swa_window_size
+
+    try:
+      from flash_attn import flash_attn_func
+      # flash-attn expects [B, N, H, D] layout.
+      q_ = query.transpose(1, 2).contiguous()
+      k_ = key.transpose(1, 2).contiguous()
+      v_ = value.transpose(1, 2).contiguous()
+      out = flash_attn_func(
+        q_, k_, v_,
+        dropout_p=dropout_p,
+        causal=True,
+        window_size=(w, 0),
+      )
+      return rearrange(out, 'b n h d -> b n (h d)')
+    except ImportError:
+      seq_len = query.size(-2)
+      i = torch.arange(seq_len, device=query.device)
+      diff = i[:, None] - i[None, :]
+      band_keep = (diff >= 0) & (diff <= w)
+      band_mask = ~band_keep  # True = mask out
+
+      has_padding = (attention_mask is not None) and bool((attention_mask < 0).any())
+      if has_padding:
+        pad = (attention_mask < 0)
+        attn_mask = band_mask[None, None] | pad
+      else:
+        attn_mask = band_mask[None, None]
+
+      context = F.scaled_dot_product_attention(
+        query, key, value,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=False,
+      )
+      return rearrange(context, 'b h t d -> b t (h d)')
 
   def forward(self, hidden_states, attention_mask):
     """
@@ -73,7 +149,14 @@ class CausalSelfAttention(nn.Module):
     key_layer = self.transform(hidden_states, self.key)
     value_layer = self.transform(hidden_states, self.value)
     query_layer = self.transform(hidden_states, self.query)
-    
-    # Calculate the multi-head attention.
-    attn_value = self.attention(key_layer, query_layer, value_layer, attention_mask)
-    return attn_value
+
+    if self.attn_impl == 'baseline':
+      return self.attention(key_layer, query_layer, value_layer, attention_mask)
+    elif self.attn_impl == 'flash':
+      return self._flash_attention(query_layer, key_layer, value_layer, attention_mask)
+    elif self.attn_impl == 'swa':
+      return self._swa_attention(query_layer, key_layer, value_layer, attention_mask)
+    else:
+      raise ValueError(
+        f"Unknown attn_impl: {self.attn_impl!r}. Expected 'baseline', 'flash', or 'swa'."
+      )
