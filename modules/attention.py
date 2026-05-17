@@ -4,6 +4,12 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
 
+try:
+  from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+  _HAS_FLEX_ATTENTION = True
+except ImportError:
+  _HAS_FLEX_ATTENTION = False
+
 
 class CausalSelfAttention(nn.Module):
   def __init__(self, config):
@@ -95,16 +101,37 @@ class CausalSelfAttention(nn.Module):
     return rearrange(context, 'b h t d -> b t (h d)')
 
   def _swa_attention(self, query, key, value, attention_mask):
-    # Sliding Window Attention (Longformer-style). The flash-attn library
-    # provides a native window_size argument that gives the true O(N*w) compute
-    # path; if it is not installed we fall back to a banded mask via SDPA,
-    # which preserves the utility tradeoff but not the compute speedup.
+    # Sliding Window Attention (Longformer-style). Three tiers, fastest first:
+    #   1. PyTorch FlexAttention with a BlockMask  (torch >= 2.5, no extra deps)
+    #   2. flash-attn library's native window_size (requires flash-attn)
+    #   3. Banded mask via SDPA                    (always works; no speedup)
     dropout_p = self.dropout.p if self.training else 0.0
     w = self.swa_window_size
+    seq_len = query.size(-2)
+
+    if _HAS_FLEX_ATTENTION:
+      has_padding = (attention_mask is not None) and bool((attention_mask < 0).any())
+      if not has_padding:
+        cache_key = (seq_len, w, query.device)
+        if getattr(self, '_swa_cache_key', None) != cache_key:
+          window = w
+          def swa_mask_mod(b, h, q_idx, kv_idx):
+            causal = q_idx >= kv_idx
+            in_window = (q_idx - kv_idx) <= window
+            return causal & in_window
+          self._swa_block_mask = create_block_mask(
+            swa_mask_mod, B=None, H=None,
+            Q_LEN=seq_len, KV_LEN=seq_len,
+            device=query.device,
+          )
+          self._swa_cache_key = cache_key
+        context = flex_attention(query, key, value, block_mask=self._swa_block_mask)
+        if dropout_p > 0:
+          context = F.dropout(context, p=dropout_p, training=self.training)
+        return rearrange(context, 'b h t d -> b t (h d)')
 
     try:
       from flash_attn import flash_attn_func
-      # flash-attn expects [B, N, H, D] layout.
       q_ = query.transpose(1, 2).contiguous()
       k_ = key.transpose(1, 2).contiguous()
       v_ = value.transpose(1, 2).contiguous()
@@ -116,26 +143,27 @@ class CausalSelfAttention(nn.Module):
       )
       return rearrange(out, 'b n h d -> b n (h d)')
     except ImportError:
-      seq_len = query.size(-2)
-      i = torch.arange(seq_len, device=query.device)
-      diff = i[:, None] - i[None, :]
-      band_keep = (diff >= 0) & (diff <= w)
-      band_mask = ~band_keep  # True = mask out
+      pass
 
-      has_padding = (attention_mask is not None) and bool((attention_mask < 0).any())
-      if has_padding:
-        pad = (attention_mask < 0)
-        attn_mask = band_mask[None, None] | pad
-      else:
-        attn_mask = band_mask[None, None]
+    i = torch.arange(seq_len, device=query.device)
+    diff = i[:, None] - i[None, :]
+    band_keep = (diff >= 0) & (diff <= w)
+    band_mask = ~band_keep  # True = mask out
 
-      context = F.scaled_dot_product_attention(
-        query, key, value,
-        attn_mask=attn_mask,
-        dropout_p=dropout_p,
-        is_causal=False,
-      )
-      return rearrange(context, 'b h t d -> b t (h d)')
+    has_padding = (attention_mask is not None) and bool((attention_mask < 0).any())
+    if has_padding:
+      pad = (attention_mask < 0)
+      attn_mask = band_mask[None, None] | pad
+    else:
+      attn_mask = band_mask[None, None]
+
+    context = F.scaled_dot_product_attention(
+      query, key, value,
+      attn_mask=attn_mask,
+      dropout_p=dropout_p,
+      is_causal=False,
+    )
+    return rearrange(context, 'b h t d -> b t (h d)')
 
   def forward(self, hidden_states, attention_mask):
     """
