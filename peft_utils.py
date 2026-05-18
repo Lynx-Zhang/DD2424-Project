@@ -7,18 +7,22 @@ def get_lora_model(model, r=8, lora_alpha=16, target_modules=["query", "key", "v
     """
     Replaces target Linear layers in the model with LoRALinear layers.
     """
-    for name, module in model.named_modules():
-        if isinstance(module, nn.Linear):
-            # Check if any of the target module names are in the full name
-            if any(target in name for target in target_modules):
-                # print(f"Applying LoRA to {name}")
-                parent_name = ".".join(name.split(".")[:-1])
-                child_name = name.split(".")[-1]
-                parent = dict(model.named_modules())[parent_name]
-                
-                # Replace the layer
-                lora_layer = LoRALinear(module, r=r, lora_alpha=lora_alpha)
-                setattr(parent, child_name, lora_layer)
+    for name, module in list(model.named_modules()):
+        if not isinstance(module, nn.Linear):
+            continue
+
+        child_name = name.split(".")[-1]
+        if child_name not in target_modules:
+            continue
+
+        parent_name = ".".join(name.split(".")[:-1])
+        parent = model if parent_name == "" else dict(model.named_modules())[parent_name]
+
+        if isinstance(getattr(parent, child_name), LoRALinear):
+            continue
+
+        lora_layer = LoRALinear(module, r=r, lora_alpha=lora_alpha)
+        setattr(parent, child_name, lora_layer)
     return model
 
 def get_reft_model(model, r=4, layers=[10, 11], positions='last'):
