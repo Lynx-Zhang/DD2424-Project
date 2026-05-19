@@ -36,6 +36,12 @@ def parse_args():
     parser.add_argument("--use_gpu", action="store_true")
     parser.add_argument("--seeds", type=int, nargs="+", default=[11711, 11712, 11713])
     parser.add_argument("--output", default="peft_grid_results.jsonl")
+    parser.add_argument("--mode", choices=["lora", "reft", "both"], default="both")
+    parser.add_argument("--start_index", type=int, default=0)
+    parser.add_argument("--end_index", type=int, default=-1)
+    parser.add_argument("--chunk_size", type=int, default=0)
+    parser.add_argument("--max_minutes", type=int, default=0)
+    parser.add_argument("--resume", action="store_true")
     return parser.parse_args()
 
 
@@ -99,6 +105,54 @@ def run_one(cfg, train_dataloader, dev_dataloader, device):
     }
 
 
+def config_key(cfg):
+    return (
+        cfg.peft_type,
+        tuple(cfg.lora_targets) if cfg.lora_targets else (),
+        cfg.lora_r,
+        cfg.lora_alpha,
+        cfg.reft_r,
+        cfg.reft_layers,
+        cfg.reft_positions,
+        cfg.seed,
+        cfg.lr,
+        cfg.epochs,
+        cfg.batch_size,
+    )
+
+
+def load_completed(output_path):
+    completed = set()
+    try:
+        with open(output_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                completed.add(
+                    (
+                        record.get("peft_type"),
+                        tuple(record.get("lora_targets") or []),
+                        record.get("lora_r"),
+                        record.get("lora_alpha"),
+                        record.get("reft_r"),
+                        record.get("reft_layers"),
+                        record.get("reft_positions"),
+                        record.get("seed"),
+                        record.get("lr"),
+                        record.get("epochs"),
+                        record.get("batch_size"),
+                    )
+                )
+    except FileNotFoundError:
+        return completed
+    return completed
+
+
 def main():
     args = parse_args()
     device = torch.device("cuda") if args.use_gpu and torch.cuda.is_available() else torch.device("cpu")
@@ -119,16 +173,43 @@ def main():
     lora_configs = list(itertools.product(lora_r_grid, lora_alpha_grid, lora_targets_grid))
     reft_configs = list(itertools.product(reft_r_grid, reft_layers_grid, reft_positions_grid))
 
-    with open(args.output, "w", encoding="utf-8") as out:
-        for seed in args.seeds:
-            seed_everything(seed)
+    all_jobs = []
+    for seed in args.seeds:
+        if args.mode in ["lora", "both"]:
+            for lora_r, lora_alpha, lora_targets in lora_configs:
+                all_jobs.append(
+                    ("lora", seed, (lora_r, lora_alpha, lora_targets))
+                )
+        if args.mode in ["reft", "both"]:
+            for reft_r, reft_layers, reft_positions in reft_configs:
+                all_jobs.append(
+                    ("reft", seed, (reft_r, reft_layers, reft_positions))
+                )
 
+    start_idx = max(args.start_index, 0)
+    end_idx = len(all_jobs) if args.end_index < 0 else min(args.end_index, len(all_jobs))
+    jobs = all_jobs[start_idx:end_idx]
+    if args.chunk_size > 0:
+        jobs = jobs[: args.chunk_size]
+
+    completed = load_completed(args.output) if args.resume else set()
+    start_time = time.time()
+    total_jobs = len(jobs)
+    done_jobs = 0
+
+    with open(args.output, "a", encoding="utf-8") as out:
+        for peft_type, seed, params in jobs:
+            if args.max_minutes > 0 and (time.time() - start_time) > args.max_minutes * 60:
+                print("Reached time limit, stopping early.")
+                break
+
+            seed_everything(seed)
             train_dataloader, dev_dataloader, num_labels = build_dataloaders(
                 args.train, args.dev, args.batch_size
             )
 
-            # LoRA scans + target ablation
-            for lora_r, lora_alpha, lora_targets in lora_configs:
+            if peft_type == "lora":
+                lora_r, lora_alpha, lora_targets = params
                 cfg = SimpleNamespace(
                     peft_type="lora",
                     lora_r=lora_r,
@@ -145,13 +226,8 @@ def main():
                     batch_size=args.batch_size,
                     seed=seed,
                 )
-                result = run_one(cfg, train_dataloader, dev_dataloader, device)
-                out.write(json.dumps(result) + "\n")
-                out.flush()
-                print(result)
-
-            # ReFT scans + position ablation
-            for reft_r, reft_layers, reft_positions in reft_configs:
+            else:
+                reft_r, reft_layers, reft_positions = params
                 cfg = SimpleNamespace(
                     peft_type="reft",
                     lora_r=8,
@@ -168,10 +244,19 @@ def main():
                     batch_size=args.batch_size,
                     seed=seed,
                 )
-                result = run_one(cfg, train_dataloader, dev_dataloader, device)
-                out.write(json.dumps(result) + "\n")
-                out.flush()
-                print(result)
+
+            key = config_key(cfg)
+            if key in completed:
+                done_jobs += 1
+                print(f"Progress: {done_jobs}/{total_jobs} (skipped)")
+                continue
+
+            result = run_one(cfg, train_dataloader, dev_dataloader, device)
+            out.write(json.dumps(result) + "\n")
+            out.flush()
+            done_jobs += 1
+            print(f"Progress: {done_jobs}/{total_jobs}")
+            print(result)
 
 
 if __name__ == "__main__":

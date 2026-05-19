@@ -42,7 +42,13 @@ class GPT2SentimentClassifier(torch.nn.Module):
 
     # Apply PEFT
     if config.peft_type == "lora":
-        self.gpt = get_lora_model(self.gpt, r=config.lora_r, lora_alpha=config.lora_alpha)
+      target_modules = getattr(config, "lora_targets", ["query", "key", "value"])
+      self.gpt = get_lora_model(
+        self.gpt,
+        r=config.lora_r,
+        lora_alpha=config.lora_alpha,
+        target_modules=target_modules,
+      )
     elif config.peft_type == "reft":
         # Example: intervene on last 2 layers
         layers = list(range(max(0, self.gpt.config.num_hidden_layers - config.reft_layers), self.gpt.config.num_hidden_layers))
